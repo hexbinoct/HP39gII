@@ -30,7 +30,8 @@ display glyph — on platforms HP never shipped to.
 | M2 | Calc core boots headless, reaches main message loop | ✅ |
 | M3 | Drive "1 + 1 = ENTER", dump & decode framebuffer | ✅ |
 | — | **Boots under Unicorn on Android (Termux)** | ✅ |
-| — | Native Android app (NDK + JNI + Compose) | 🔜 |
+| — | Android app: Unicorn x86 linked & executing on-device (Phase A) | ✅ |
+| — | Android app: port the loader + framebuffer/keypad UI (Phase B/C) | 🚧 |
 | — | Browser port (Unicorn 2.x → WASM via Emscripten) | 🔜 |
 
 ## Live output
@@ -44,6 +45,22 @@ HP's own rendering code, driven headless through `1 + 1 = ENTER` (upscaled 4×):
 
 The final frame shows `1 + 1` evaluating to `2` on the entry line — produced entirely by
 the original firmware, no GUI, no Windows.
+
+## Android app (`android/`)
+
+A native Android app (Kotlin + NDK/JNI) that links **Unicorn Engine 2.1.4** and runs
+the same x86 calculator core on-device. Phase A is working: Unicorn is cross-compiled,
+statically linked into the app's `.so`, and verified executing guest x86 on the emulator.
+
+**Building Unicorn for Android needs one step**, because Unicorn embeds QEMU and QEMU's
+`configure` needs POSIX tooling:
+
+- **macOS / Linux:** build natively, no Docker — `android/docker/build-unicorn-native.sh`.
+- **Windows:** that POSIX tooling isn't available on a bare host, so the build runs inside
+  a Linux container via Docker. **Docker is only required on Windows.**
+
+Full instructions (both paths) are in [`android/docker/README.md`](android/docker/README.md).
+Prebuilt libs are gitignored; you regenerate them once, then build the app normally.
 
 ## How it works
 
