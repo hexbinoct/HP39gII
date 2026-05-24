@@ -30,7 +30,25 @@ constexpr uint32_t TRAMP_BASE  = 0x20000000;     // one slot per import
 constexpr uint32_t TRAMP_SIZE  = 0x00010000;
 constexpr uint32_t GDT_BASE    = 0x00300000;
 constexpr uint32_t GDT_SIZE    = PAGE;
-constexpr uint32_t SENTINEL_RET = 0xDEADBEEF;    // fake ret addr -> halt
+constexpr uint32_t SENTINEL_RET = 0xDEADBEEF;    // boot thread ret addr -> halt
+
+// Second sentinel: return address pushed when the host calls into emulated
+// code (call_emu). Must be mapped so Unicorn can fetch a byte there.
+constexpr uint32_t SENTINEL_HOST_RET = 0x21000000;
+
+// Calc-internal function VAs (verified against Ghidra; image is non-ASLR).
+constexpr uint32_t FN_ENQUEUE_EVENT = 0x00941210;  // __thiscall(ecx=queue, evt, payload)
+constexpr uint32_t FN_PRESS_KEY     = 0x0043BE90;  // __cdecl(keycode)
+constexpr uint32_t FN_RELEASE_KEY   = 0x0043BED0;  // __cdecl(keycode)
+constexpr uint32_t FN_TICK          = 0x00944270;  // __fastcall(ecx=state) process+repaint
+constexpr uint32_t FN_DRAIN_QUEUE   = 0x00942310;  // __thiscall(ecx=queue, arg)
+
+constexpr uint32_t ADDR_EVENT_QUEUE = 0x00DECA08;  // -> queue object
+constexpr uint32_t ADDR_HOST_BRIDGE = 0x00DECA00;  // -> host bridge struct
+constexpr uint32_t ADDR_STATE       = 0x00DEC9F8;  // -> CDesktop root
+constexpr uint32_t STATE_FB_PTR_OFS = 0x14;
+constexpr uint32_t FB_BYTES         = 10922;       // 86 bytes/row * 127 rows
+constexpr uint32_t FB_PITCH         = 86;
 
 // Reported as the module path to the guest (kept Windows-shaped on purpose).
 constexpr const char *MODULE_PATH = "C:\\HP39gII.exe";
@@ -91,14 +109,20 @@ struct Ctx {
     }
     uint32_t handle() { return next_handle++; }
 
-    void line(const std::string &s) { log += s; log += '\n'; }
+    bool quiet = false;  // true after boot: stop appending the verbose trace
+
+    void line(const std::string &s) { if (!quiet) { log += s; log += '\n'; } }
     // first N calls of each name print; then a one-time "[silencing]" note.
     void trace(const std::string &name, const std::string &s) {
+        if (quiet) return;
         int c = ++call_counts[name];
         if (c <= VERBOSE_PER_NAME) line(s);
         else if (c == VERBOSE_PER_NAME + 1) line("  [silencing further " + name + " calls]");
     }
 };
+
+// Persistent VM: boot once, then inject keys / read framebuffer across JNI calls.
+Ctx *g = nullptr;
 
 // guest memory helpers
 uint32_t rd32(uc_engine *uc, uint32_t va) {
@@ -295,11 +319,14 @@ void on_code(uc_engine *uc, uint64_t address, uint32_t /*size*/, void *user) {
     Ctx &c = *reinterpret_cast<Ctx *>(user);
     uint32_t addr = (uint32_t)address;
 
+    if (addr == SENTINEL_HOST_RET) {  // host call_emu returned
+        uc_emu_stop(uc); return;
+    }
     if (addr == SENTINEL_RET) {
         c.line("\n[halt] hit sentinel return address -- calc thread returned cleanly");
         uc_emu_stop(uc); return;
     }
-    if (addr == MAIN_LOOP_VA) {
+    if (addr == MAIN_LOOP_VA && !c.booted) {  // only halt the initial boot here
         c.line("\n[halt] reached main-loop entry FUN_00401730 -- calc booted");
         c.booted = true; uc_emu_stop(uc); return;
     }
@@ -373,7 +400,9 @@ void setup_fs_segment(uc_engine *uc) {
 }  // namespace
 
 std::string hp39_boot(const uint8_t *exe, size_t len) {
-    Ctx c;
+    if (g) { if (g->uc) uc_close(g->uc); delete g; }   // re-boot resets the VM
+    g = new Ctx();
+    Ctx &c = *g;
     uc_err err = uc_open(UC_ARCH_X86, UC_MODE_32, &c.uc);
     if (err != UC_ERR_OK) return std::string("uc_open failed: ") + uc_strerror(err);
     uc_engine *uc = c.uc;
@@ -382,6 +411,8 @@ std::string hp39_boot(const uint8_t *exe, size_t len) {
     uc_mem_map(uc, STACK_BASE, STACK_SIZE, UC_PROT_ALL);
     uc_mem_map(uc, HEAP_BASE, HEAP_SIZE, UC_PROT_ALL);
     uc_mem_map(uc, TRAMP_BASE, TRAMP_SIZE, UC_PROT_ALL);
+    uc_mem_map(uc, SENTINEL_HOST_RET & ~0xFFFu, PAGE, UC_PROT_ALL);
+    uint8_t ret_op = 0xC3; uc_mem_write(uc, SENTINEL_HOST_RET, &ret_op, 1);
 
     // --- parse PE headers from the raw buffer ---
     if (len < sizeof(DosHeader)) { uc_close(uc); return "exe too small"; }
@@ -465,6 +496,96 @@ std::string hp39_boot(const uint8_t *exe, size_t len) {
     uc_reg_read(uc, UC_X86_REG_ESP, &fin_esp);
     c.line(fmt("\n[stop] EIP=0x%x ESP=0x%x", fin_eip, fin_esp));
     c.line(fmt("[stop] heap consumed: %u bytes", c.heap_ptr - HEAP_BASE));
-    uc_close(uc);
+
+    // Post-boot fixup: the calc has 0 fonts loaded (normally read from
+    // calc.settings on disk). Set host_bridge[+0x584] = 1 (font count) so
+    // FUN_00935660's underflow-on-zero path yields a valid index, not 0xFFFFFFFF.
+    if (c.booted) {
+        uint32_t bridge = rd32(uc, ADDR_HOST_BRIDGE);
+        wr32(uc, bridge + 0x584, 1);
+        c.line("[boot] set host_bridge[+0x584] = 1 (font count)");
+    }
+    c.quiet = true;  // keep the VM live; stop accumulating the verbose trace
     return c.log;
+}
+
+bool hp39_booted() { return g && g->booted; }
+
+namespace {
+
+// Call into emulated code from the host (mirrors m3's call_emu). Pushes args
+// right-to-left, then the host sentinel; sets ECX; runs until the sentinel is
+// hit. Callees clean their own args (stdcall/fastcall) or not (cdecl) — we do
+// NOT restore ESP, exactly like the Python harness.
+uint32_t call_emu(Ctx &c, uint32_t fn, uint32_t ecx, const uint32_t *args, int nargs) {
+    uc_engine *uc = c.uc;
+    uint32_t esp = 0; uc_reg_read(uc, UC_X86_REG_ESP, &esp);
+    for (int i = nargs - 1; i >= 0; i--) { esp -= 4; wr32(uc, esp, args[i]); }
+    esp -= 4; wr32(uc, esp, SENTINEL_HOST_RET);
+    uc_reg_write(uc, UC_X86_REG_ESP, &esp);
+    uc_reg_write(uc, UC_X86_REG_ECX, &ecx);
+    uc_emu_start(uc, fn, 0, 5ULL * 1000000, 10000000);
+    uint32_t eax = 0; uc_reg_read(uc, UC_X86_REG_EAX, &eax);
+    return eax;
+}
+
+// What the main loop does after a wake: pre-drain state-flag fixups, then
+// drain the event queue and repaint.
+void drain_and_tick(Ctx &c) {
+    uc_engine *uc = c.uc;
+    uint32_t queue  = rd32(uc, ADDR_EVENT_QUEUE);
+    uint32_t bridge = rd32(uc, ADDR_HOST_BRIDGE);
+    uint32_t arg    = rd32(uc, bridge + 0x20);
+    uint32_t state  = rd32(uc, ADDR_STATE);
+
+    uint32_t f2c = rd32(uc, state + 0x2c); wr32(uc, state + 0x2c, f2c & 0xfffffbffu);
+    uint32_t f90 = rd32(uc, state + 0x90); if (!(f90 & 0x10)) wr32(uc, state + 0x90, f90 | 0x10);
+
+    uint32_t a1 = arg;       call_emu(c, FN_DRAIN_QUEUE, queue, &a1, 1);
+    uint32_t a0 = 0;         call_emu(c, FN_TICK,        state, &a0, 1);
+}
+
+}  // namespace
+
+void hp39_inject_key(int keycode) {
+    if (!g || !g->booted) return;
+    Ctx &c = *g;
+    uc_engine *uc = c.uc;
+
+    // 16-byte event payload: type=1 at [0], keycode at [4].
+    uint32_t payload = c.malloc(16);
+    uint8_t evt[16] = {0}; evt[0] = 1; evt[4] = (uint8_t)keycode;
+    uc_mem_write(uc, payload, evt, 16);
+
+    uint32_t queue = rd32(uc, ADDR_EVENT_QUEUE);
+    uint32_t enq[2] = {0, payload};      call_emu(c, FN_ENQUEUE_EVENT, queue, enq, 2);
+    uint32_t kc = (uint32_t)keycode;
+    call_emu(c, FN_PRESS_KEY, 0, &kc, 1);
+    drain_and_tick(c);
+    call_emu(c, FN_RELEASE_KEY, 0, &kc, 1);
+    drain_and_tick(c);
+}
+
+bool hp39_get_framebuffer(uint8_t *out) {
+    if (!g || !g->booted) return false;
+    uc_engine *uc = g->uc;
+    uint32_t state  = rd32(uc, ADDR_STATE);
+    uint32_t fb_ptr = rd32(uc, state + STATE_FB_PTR_OFS);
+    std::vector<uint8_t> fb(FB_BYTES);
+    if (uc_mem_read(uc, fb_ptr, fb.data(), FB_BYTES) != UC_ERR_OK) return false;
+
+    // 3 pixels packed per byte (3+3+2 bits); displayed level = bits >> 1 (0..3).
+    // Map 0..3 -> 0/85/170/255 for an 8-bit grayscale bitmap.
+    static const uint8_t LUT[4] = {0, 85, 170, 255};
+    for (int row = 0; row < HP39_FB_H; row++) {
+        const uint8_t *rd = &fb[row * FB_PITCH];
+        uint8_t *wr = &out[row * HP39_FB_W];
+        for (int bi = 0; bi < FB_PITCH; bi++) {
+            int x = bi * 3; uint8_t b = rd[bi];
+            if (x < HP39_FB_W)     wr[x]     = LUT[((b >> 5) & 7) >> 1];
+            if (x + 1 < HP39_FB_W) wr[x + 1] = LUT[((b >> 2) & 7) >> 1];
+            if (x + 2 < HP39_FB_W) wr[x + 2] = LUT[((b << 1) & 7) >> 1];
+        }
+    }
+    return true;
 }

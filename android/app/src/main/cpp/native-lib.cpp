@@ -69,3 +69,29 @@ Java_com_hexbinoct_hp39gii_MainActivity_nativeBoot(
     std::string out = hp39_boot(buf.data(), (size_t)len);
     return env->NewStringUTF(out.c_str());
 }
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_hexbinoct_hp39gii_MainActivity_nativeBooted(
+        JNIEnv* /*env*/, jobject /* this */) {
+    return hp39_booted() ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_hexbinoct_hp39gii_MainActivity_nativeInjectKey(
+        JNIEnv* /*env*/, jobject /* this */, jint keycode) {
+    hp39_inject_key((int)keycode);
+}
+
+// Returns the current framebuffer as HP39_FB_W*HP39_FB_H grayscale bytes,
+// or null if the calc hasn't booted.
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_com_hexbinoct_hp39gii_MainActivity_nativeFramebuffer(
+        JNIEnv* env, jobject /* this */) {
+    if (!hp39_booted()) return nullptr;
+    const int n = HP39_FB_W * HP39_FB_H;
+    std::vector<uint8_t> px(n);
+    if (!hp39_get_framebuffer(px.data())) return nullptr;
+    jbyteArray arr = env->NewByteArray(n);
+    env->SetByteArrayRegion(arr, 0, n, reinterpret_cast<const jbyte*>(px.data()));
+    return arr;
+}
