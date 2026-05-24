@@ -1,0 +1,30 @@
+# ---- HP proprietary material (DO NOT COMMIT) ----
+# Users must supply their own legally-downloaded copy of the HP 39gII emulator.
+HP39gII.exe
+HP39gII*.dll
+HPUpdateCheck.dll
+*.skin
+hp39gII_*.bmp
+Users_Guide_*.pdf
+Emulator_Help_*.pdf
+
+# ---- Build artifacts ----
+*.obj
+*.exe
+*.dll
+inject.exe
+probe.dll
+
+# ---- Generated / runtime output ----
+fb*_*.bin
+fb*_*.pgm
+fb*_*.txt
+*.log
+empty_stdin.txt
+harness/headless/frames/
+__pycache__/
+*.pyc
+
+# ---- Local tooling ----
+.claude/
+*.local.json

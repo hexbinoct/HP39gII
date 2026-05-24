@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HP 39gII — Web Port</title>
+  <style>
+    :root {
+      --bg: #1c1f24;
+      --fg: #e6e6e6;
+      --muted: #8a8f99;
+      --accent: #4ea1ff;
+      --calc: #2a2f38;
+      --key: #3a414d;
+      --key-hover: #4a5260;
+      --screen: #9eA495;
+      --screen-fg: #000;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      padding: 24px;
+    }
+    h1 { margin: 0 0 4px; font-size: 18px; font-weight: 600; }
+    .sub { color: var(--muted); margin-bottom: 24px; font-size: 13px; }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 32px;
+      max-width: 1100px;
+    }
+    .calc {
+      background: var(--calc);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 6px 24px rgba(0,0,0,0.4);
+    }
+    .screen-wrap {
+      background: #000;
+      padding: 10px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    canvas#screen {
+      display: block;
+      background: var(--screen);
+      image-rendering: pixelated;
+      width: 768px;     /* 256 * 3 */
+      height: 381px;    /* 127 * 3 */
+    }
+    .keypad {
+      margin-top: 20px;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 6px;
+    }
+    button.k {
+      background: var(--key);
+      color: var(--fg);
+      border: none;
+      border-radius: 6px;
+      padding: 14px 0;
+      font: inherit;
+      font-size: 15px;
+      cursor: pointer;
+      transition: background 0.08s;
+    }
+    button.k:hover:not(:disabled) { background: var(--key-hover); }
+    button.k:active:not(:disabled) { background: var(--accent); color: #000; }
+    button.k:disabled { opacity: 0.4; cursor: not-allowed; }
+    button.k.num { background: #4a5260; }
+
+    aside.status {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      background: #15171c;
+      border-radius: 8px;
+      padding: 14px 16px;
+      max-height: 600px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+    aside.status .ok { color: #5fd06b; }
+    aside.status .err { color: #ff6b6b; }
+    aside.status .dim { color: var(--muted); }
+    aside.status h2 {
+      margin: 0 0 8px; font-size: 13px; font-weight: 600;
+      color: var(--accent); font-family: inherit;
+    }
+    .toolbar { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+    .toolbar button {
+      background: #2d343f;
+      color: var(--fg);
+      border: 1px solid #404754;
+      border-radius: 6px;
+      padding: 6px 12px;
+      cursor: pointer;
+      font: inherit; font-size: 13px;
+    }
+    .toolbar button:hover { background: #353c48; }
+  </style>
+</head>
+<body>
+  <h1>HP 39gII — running in a browser</h1>
+  <div class="sub">
+    The same x86 calculator binary, with zero Windows underneath.
+    Boots inside Unicorn-WASM, framebuffer rendered to the canvas, keys injected from clicks.
+  </div>
+
+  <div class="layout">
+    <div class="calc">
+      <div class="screen-wrap">
+        <canvas id="screen" width="256" height="127"></canvas>
+      </div>
+
+      <div class="keypad" id="keypad">
+        <!-- 51-key skin; filled by main.js -->
+      </div>
+
+      <div class="toolbar">
+        <button id="btn-reset">Reset / re-boot</button>
+        <button id="btn-dump">Dump frame as PNG</button>
+      </div>
+    </div>
+
+    <aside class="status" id="status">
+      <h2>Boot log</h2>
+      <span class="dim">loading...</span>
+    </aside>
+  </div>
+
+  <!-- Unicorn (asm.js bundle, AlexAltea/unicorn.js 1.0.1).
+       Self-contained: includes the asm.js module + JS wrapper + constants. -->
+  <script src="./unicorn-x86.min.js"></script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
