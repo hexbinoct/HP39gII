@@ -31,7 +31,8 @@ display glyph — on platforms HP never shipped to.
 | M3 | Drive "1 + 1 = ENTER", dump & decode framebuffer | ✅ |
 | — | **Boots under Unicorn on Android (Termux)** | ✅ |
 | — | Android app: Unicorn x86 linked & executing on-device (Phase A) | ✅ |
-| — | Android app: port the loader + framebuffer/keypad UI (Phase B/C) | 🚧 |
+| — | Android app: loader ported to C++, calc core boots on-device (Phase B) | ✅ |
+| — | Android app: key injection + framebuffer/keypad UI (Phase C) | 🚧 |
 | — | Browser port (Unicorn 2.x → WASM via Emscripten) | 🔜 |
 
 ## Live output
@@ -51,6 +52,11 @@ the original firmware, no GUI, no Windows.
 A native Android app (Kotlin + NDK/JNI) that links **Unicorn Engine 2.1.4** and runs
 the same x86 calculator core on-device. Phase A is working: Unicorn is cross-compiled,
 statically linked into the app's `.so`, and verified executing guest x86 on the emulator.
+
+Phase B is also working: `harness/headless/load.py` has been ported to C++
+(`android/app/src/main/cpp/emu.cpp`) — the calc core boots inside the app and reaches
+the same main-loop entry (`EIP=0x401730`) as the Python harness, bit-for-bit. You supply
+`HP39gII.exe` in `app/src/main/assets/` (gitignored).
 
 **Building Unicorn for Android needs one step**, because Unicorn embeds QEMU and QEMU's
 `configure` needs POSIX tooling:

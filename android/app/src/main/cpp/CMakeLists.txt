@@ -26,7 +26,8 @@ project("hp39gii")
 # used in the AndroidManifest.xml file.
 add_library(${CMAKE_PROJECT_NAME} SHARED
         # List C/C++ source files with relative paths to this CMakeLists.txt.
-        native-lib.cpp)
+        native-lib.cpp
+        emu.cpp)
 
 # --- Unicorn Engine (x86 guest) as prebuilt static libs -------------------
 # QEMU's configure step can't run on a Windows host, so Unicorn is

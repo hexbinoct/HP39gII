@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <string>
+#include <vector>
 #include <unicorn/unicorn.h>
+#include "emu.h"
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_hexbinoct_hp39gii_MainActivity_stringFromJNI(
@@ -52,4 +54,18 @@ Java_com_hexbinoct_hp39gii_MainActivity_unicornSelfTest(
              "Unicorn %u.%u OK\nRan x86: 0x29 + inc -> EAX = 0x%x (%d)\n%s",
              major, minor, eax, eax, (eax == 0x2a) ? "PASS" : "FAIL");
     return env->NewStringUTF(buf);
+}
+
+// Phase B: load HP39gII.exe (passed as a byte[]) and boot the calc core
+// headless under Unicorn, returning the boot log.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_hexbinoct_hp39gii_MainActivity_nativeBoot(
+        JNIEnv* env,
+        jobject /* this */,
+        jbyteArray exe) {
+    jsize len = env->GetArrayLength(exe);
+    std::vector<uint8_t> buf(len);
+    env->GetByteArrayRegion(exe, 0, len, reinterpret_cast<jbyte*>(buf.data()));
+    std::string out = hp39_boot(buf.data(), (size_t)len);
+    return env->NewStringUTF(out.c_str());
 }

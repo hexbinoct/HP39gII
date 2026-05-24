@@ -19,3 +19,6 @@ local.properties
 # Host-side Unicorn source/build scratch (Windows standalone attempt)
 /.unicorn-src/
 /.unicorn-build/
+
+# HP proprietary binary — users supply their own (see repo README)
+/app/src/main/assets/HP39gII.exe
