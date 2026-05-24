@@ -33,6 +33,18 @@ display glyph — on platforms HP never shipped to.
 | — | Native Android app (NDK + JNI + Compose) | 🔜 |
 | — | Browser port (Unicorn 2.x → WASM via Emscripten) | 🔜 |
 
+## Live output
+
+These are real 256×127 framebuffers decoded straight out of the emulated calculator —
+HP's own rendering code, driven headless through `1 + 1 = ENTER` (upscaled 4×):
+
+| Boot | Press `1` | Press `+` | Press `1` | Press `ENTER` |
+|------|-----------|-----------|-----------|---------------|
+| ![boot](docs/screenshots/01_initial.png) | ![1](docs/screenshots/02_key_1.png) | ![+](docs/screenshots/03_key_plus.png) | ![1](docs/screenshots/04_key_1_again.png) | ![=](docs/screenshots/05_key_enter.png) |
+
+The final frame shows `1 + 1` evaluating to `2` on the entry line — produced entirely by
+the original firmware, no GUI, no Windows.
+
 ## How it works
 
 - **`harness/headless/load.py`** — the core. Maps the PE at its image base, sets up a
