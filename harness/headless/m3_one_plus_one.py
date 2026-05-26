@@ -71,13 +71,17 @@ def boot(uc: Uc):
     uc.emu_start(load.CALC_THREAD_VA, 0, timeout=10_000_000, count=4_000_000)
     assert uc.reg_read(UC_X86_REG_EIP) == load.MAIN_LOOP_VA, "boot did not reach main loop"
 
-    # Post-boot fixup: the calc has 0 fonts loaded (normally read from
-    # calc.settings on disk). Set the "font count" field to 1 so
-    # FUN_00935660's underflow-on-zero path produces a valid index instead
-    # of 0xFFFFFFFF.
+    # Post-boot fixup: host_bridge[+0x584] is the default FONT INDEX (not a
+    # count). It is normally set when fonts load from calc.settings; we stub
+    # that file I/O so it stays 0, which makes FUN_00935660's decrement-with-
+    # wrap underflow to 0xFFFFFFFF and crash the widget sizer (FUN_00944630).
+    # The system fonts are embedded in .rdata (static table @0xC18D00):
+    #   index 1 -> table[0] line-height 12 (small), index 2 -> table[1] h=16 (large).
+    # The native golden frame sizes the edit line with the height-16 font
+    # (separator at row 94), so the real default index is 2 — set it to match.
     bridge = struct.unpack("<I", uc.mem_read(ADDR_HOST_BRIDGE, 4))[0]
-    uc.mem_write(bridge + 0x584, struct.pack("<I", 1))
-    print(f"[boot] set host_bridge[+0x584] = 1 (font count)")
+    uc.mem_write(bridge + 0x584, struct.pack("<I", 2))
+    print(f"[boot] set host_bridge[+0x584] = 2 (default font index -> embedded h=16 font)")
 
     return shim, img
 

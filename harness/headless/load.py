@@ -125,12 +125,69 @@ def hook_internal(va: int, name: str):
     return wrap
 
 
-# FUN_00944630 sets widget {width, height} fields based on the current font.
-# Triggers a NULL-deref when no font is loaded (DAT_00DECA00[+0x584] = 0).
-# For headless boot we don't care about font metrics — no-op it.
-# fastcall (param_1 in ECX), no stack args.
-@hook_internal(0x00944630, "stub_FUN_00944630")
-def _stub_944630(shim, a):
+# FUN_00944630 sizes a widget's {top, height} from the current font. Decompiled:
+#   font_sel = FUN_00942490(widget)        # 1=small, 2=large, else host_bridge[+0x584]
+#   font     = (&PTR_00C18D00)[font_sel-1] # decrement-with-wrap (FUN_00935660/680)
+#   h        = font[0]                      # first byte of the font record = line height
+#   widget[+8]    = screen_height - h - 0x11   # top edge
+#   widget[+0x10] = h + 1                       # widget height
+# The ORIGINAL NULL-derefs when no font is loaded: host_bridge[+0x584]=0 makes the
+# index wrap to 0xFFFFFFFF -> wild table[] entry -> crash. We previously no-op'd it,
+# which is exactly why the edit-line region collapsed to ~4px and clipped typed
+# glyphs to their tops. The system fonts ARE embedded in .rdata at the static table
+# 0xC18D00 (table[0] line-height=12 "small", table[1] line-height=16 "large"), so we
+# faithfully reimplement the real computation, reading those real heights and
+# guarding every pointer so it can never fault. Result: the edit line gets its
+# correct ~17px height (top=94 for the height-16 font, matching the native frame).
+# fastcall: widget pointer is in ECX, no stack args.
+FONT_TABLE_VA = 0x00C18D00
+
+def _u32(uc, addr):
+    try:
+        return struct.unpack("<I", uc.mem_read(addr, 4))[0]
+    except UcError:
+        return 0
+
+@hook_internal(0x00944630, "fix_FUN_00944630")
+def _fix_944630(shim, a):
+    uc = shim.uc
+    widget = uc.reg_read(UC_X86_REG_ECX)
+    flags = _u32(uc, widget + 0x2c)
+    # FUN_00942490: choose the font selector for this widget.
+    if (flags >> 0xc) & 1:
+        sel = 1
+    elif (flags >> 0xd) & 1:
+        sel = 2
+    else:
+        # Default path. host_bridge[+0x584] is the default font index; on a real
+        # boot it's the h=16 font (2). During OUR boot it is still 0 at the moment
+        # this fires (fonts not yet loaded, and our +0x584=2 hack runs post-boot),
+        # so fall back to 2 to match the native edit-line height (separator row 94).
+        bridge = _u32(uc, 0x00DECA00)
+        sel = (_u32(uc, bridge + 0x584) if bridge else 2) or 2
+    # FUN_00935660: decrement-with-wrap to turn the selector into a table index.
+    if sel == 0:
+        bridge = _u32(uc, 0x00DECA00)
+        count = (_u32(uc, bridge + 0x584) if bridge else 1) or 1
+        idx = count - 1
+    else:
+        idx = sel - 1
+    # Only table[0] and table[1] are real embedded fonts in this image; clamp.
+    if idx < 0 or idx > 1:
+        idx = 1
+    font_ptr = _u32(uc, FONT_TABLE_VA + idx * 4)
+    height = 16
+    if font_ptr:
+        try:
+            height = uc.mem_read(font_ptr, 1)[0] or 16
+        except UcError:
+            height = 16
+    state = _u32(uc, 0x00DEC9F8)
+    screen_h = _u32(uc, state + 0x10) if state else 127
+    if screen_h == 0:
+        screen_h = 127
+    uc.mem_write(widget + 8, struct.pack("<I", (screen_h - height - 0x11) & 0xFFFFFFFF))
+    uc.mem_write(widget + 0x10, struct.pack("<I", (height + 1) & 0xFFFFFFFF))
     return 0
 
 

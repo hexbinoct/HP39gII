@@ -297,7 +297,45 @@ int shim_call(Ctx &c, const std::string &name, const uint32_t *a, uint32_t *ret)
 // Returns true if handled; sets *ret. These are cdecl (caller cleans args).
 bool internal_call(Ctx &c, uint32_t va, const uint32_t *a, uint32_t *ret) {
     switch (va) {
-        case 0x00944630: *ret = 0; c.trace("stub_FUN_00944630", "  [internal] stub_FUN_00944630 -> 0"); return true; // font-metric NULL-deref guard
+        case 0x00944630: { // FUN_00944630: size a widget's {top,height} from the current font.
+            // Faithful reimpl. Decompiled logic:
+            //   sel  = FUN_00942490(widget)   // 1=small, 2=large, else host_bridge[+0x584]
+            //   font = (&PTR_00C18D00)[sel-1]  // decrement-with-wrap (FUN_00935660/680)
+            //   h    = font[0]                 // first byte of font record = line height
+            //   widget[+8] = screen_height - h - 0x11 ; widget[+0x10] = h + 1
+            // The original NULL-derefs when no font is loaded (host_bridge[+0x584]=0 makes
+            // the index wrap to a wild table[] entry). We previously no-op'd it, which is
+            // exactly why the edit-line region collapsed to ~4px and clipped typed glyphs to
+            // their tops. The system fonts ARE embedded in .rdata at static table 0xC18D00:
+            //   index 1 -> table[0] line-height 12 (small), index 2 -> table[1] h=16 (large).
+            // Reimplement faithfully, reading those real heights, with every pointer guarded.
+            uc_engine *u = c.uc;
+            uint32_t widget = 0; uc_reg_read(u, UC_X86_REG_ECX, &widget);
+            uint32_t flags = rd32(u, widget + 0x2c);
+            uint32_t sel;
+            if ((flags >> 0xc) & 1) sel = 1;
+            else if ((flags >> 0xd) & 1) sel = 2;
+            // Default path: host_bridge[+0x584] is the default font index. On a real
+            // boot it's the h=16 font (2); during our boot it's still 0 when this
+            // fires (our +0x584=2 hack runs post-boot), so fall back to 2 to match the
+            // native edit-line height (separator row 94 instead of a cramped 98).
+            else { uint32_t b = rd32(u, ADDR_HOST_BRIDGE); uint32_t v = b ? rd32(u, b + 0x584) : 2; sel = v ? v : 2; }
+            uint32_t idx;
+            if (sel == 0) { uint32_t b = rd32(u, ADDR_HOST_BRIDGE); uint32_t cnt = b ? rd32(u, b + 0x584) : 1; if (!cnt) cnt = 1; idx = cnt - 1; }
+            else idx = sel - 1;
+            if (idx > 1) idx = 1;  // only table[0]/table[1] are real embedded fonts
+            uint32_t font_ptr = rd32(u, 0x00C18D00 + idx * 4);
+            uint32_t height = 16;
+            if (font_ptr) { uint8_t h = 0; if (uc_mem_read(u, font_ptr, &h, 1) == UC_ERR_OK && h) height = h; }
+            uint32_t state = rd32(u, ADDR_STATE);
+            uint32_t screen_h = state ? rd32(u, state + 0x10) : 127;
+            if (screen_h == 0) screen_h = 127;
+            wr32(u, widget + 8, screen_h - height - 0x11);
+            wr32(u, widget + 0x10, height + 1);
+            *ret = 0;
+            c.trace("fix_FUN_00944630", fmt("  [internal] fix_FUN_00944630 widget=0x%x h=%u top=%u", widget, height, screen_h - height - 0x11));
+            return true;
+        }
         case 0x009618ae: *ret = c.malloc(a[0]); c.trace("calc_malloc",  fmt("  [internal] calc_malloc(%u) -> 0x%x",  a[0], *ret)); return true;
         case 0x00972c50: *ret = c.malloc(a[0]); c.trace("msvcrt_malloc", fmt("  [internal] msvcrt_malloc(%u) -> 0x%x", a[0], *ret)); return true;
         case 0x009721a0: *ret = 0;              c.trace("msvcrt_free", "  [internal] msvcrt_free -> 0"); return true;
@@ -497,13 +535,16 @@ std::string hp39_boot(const uint8_t *exe, size_t len) {
     c.line(fmt("\n[stop] EIP=0x%x ESP=0x%x", fin_eip, fin_esp));
     c.line(fmt("[stop] heap consumed: %u bytes", c.heap_ptr - HEAP_BASE));
 
-    // Post-boot fixup: the calc has 0 fonts loaded (normally read from
-    // calc.settings on disk). Set host_bridge[+0x584] = 1 (font count) so
-    // FUN_00935660's underflow-on-zero path yields a valid index, not 0xFFFFFFFF.
+    // Post-boot fixup: host_bridge[+0x584] is the default FONT INDEX (normally set
+    // when fonts load from calc.settings, which we stub). Left at 0 it makes
+    // FUN_00935660's decrement-with-wrap underflow to 0xFFFFFFFF and crash the widget
+    // sizer (FUN_00944630). System fonts are embedded in .rdata (table @0xC18D00):
+    // index 1 -> h=12 (small), index 2 -> h=16 (large). Native sizes default-path
+    // widgets with the height-16 font, so set the default index to 2 to match.
     if (c.booted) {
         uint32_t bridge = rd32(uc, ADDR_HOST_BRIDGE);
-        wr32(uc, bridge + 0x584, 1);
-        c.line("[boot] set host_bridge[+0x584] = 1 (font count)");
+        wr32(uc, bridge + 0x584, 2);
+        c.line("[boot] set host_bridge[+0x584] = 2 (default font index -> embedded h=16 font)");
     }
     c.quiet = true;  // keep the VM live; stop accumulating the verbose trace
     return c.log;
