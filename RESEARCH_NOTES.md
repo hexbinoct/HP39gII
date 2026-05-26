@@ -1,8 +1,41 @@
 # HP 39gII Calculator Reverse Engineering — Research Notes
 
 **Started:** 2026-04-03/04
-**Last updated:** 2026-05-17 (web port attempt + Android plan)
+**Last updated:** 2026-05-26 (Android app shipping; edit-line render bug fixed)
 **Goal:** Extract the pure calculator engine from `HP39gII.exe` (Windows emulator) and run it on Android (primary target) or in a browser, with our own input/output — no MFC dependency. Browser via BoxedWine is the planned phase-1 POC; Android is the end target.
+
+> ## ⭐ Current status (2026-05-26) — read this first
+>
+> The bulk of this file is a chronological research log; here's where things
+> actually stand now (much of the "what's next" / section 14 material below is
+> historical and was written before any code existed).
+>
+> - **Headless harness (Windows host): DONE.** `HP39gII.exe` boots under Unicorn
+>   with no Windows underneath; "1+1=2" etc. render correctly. See the M1–M3
+>   milestone log below.
+> - **Android app: SHIPPING (Phases A–C done, in git).** Native C++ port of the
+>   PE loader + Unicorn 2.1.4 via NDK/JNI; live framebuffer + an interactive
+>   keypad skinned as a physical HP 39gII replica. Boots and computes on a real
+>   device / emulator. Details are in the commit history (Phase A/B/C commits +
+>   the keypad-skin commit), not re-transcribed here.
+> - **Edit-line clipping bug (2026-05-26): FIXED.** Typed expressions on the edit
+>   line were vertically clipped (only glyph tops showed). Root cause: our boot
+>   had **no-op'd `FUN_00944630`** (the widget sizer that derives height from the
+>   current font's line-height), because it NULL-derefed when no font is loaded.
+>   The system fonts are actually embedded in `.rdata` (static table `0xC18D00`:
+>   table[0] line-height 12, table[1] line-height 16); the crash was just an
+>   index underflow (`host_bridge[+0x584]=0` → wraps to a wild table entry). Fix:
+>   faithfully reimplement `FUN_00944630` in both `harness/headless/load.py` and
+>   `android/.../emu.cpp`, reading the real embedded height with guarded pointers.
+>   `FUN_00944630` sizes the edit line exactly once at boot via the default-font
+>   path while `+0x584` is still 0, so the fallback now defaults to font index **2**
+>   (the h=16 font) → separator lands at row 94, pixel-identical to the native
+>   device dump `fb14_after_key_1.bin`. Also bumped the post-boot `+0x584` hack 1→2.
+>   **This supersedes the older M2/M3 notes below that describe `FUN_00944630` as
+>   a no-op and `+0x584 = 1`.** Probes used: `harness/headless/probe_{fonts,editline,
+>   editline_zoom,944630_calls}.py`.
+> - **Web port: deferred / dead-end on unicorn.js 1.x** (see the 2026-05-17 entry).
+>   Revisit only by building Unicorn 2.x → WASM.
 
 **Tooling status (2026-05-16):** Ghidra 12.0.4 at `F:\ru\myprojects\may\ghidra_12.0.4_PUBLIC` has the binary loaded and auto-analyzed (MFC RTTI applied). GhidraMCP 1.4 extension installed and HTTP server live on `127.0.0.1:8080`. Claude Code MCP server `ghidra` registered. See `GHIDRA_SETUP.md` for details.
 
@@ -297,6 +330,10 @@ patch):
    `[0xc18cfc]` which holds 0. **Fix:** internal hook stubs `FUN_00944630`
    to no-op (it sets two widget width/height fields; nothing on the boot
    path needs those values).
+   > **SUPERSEDED 2026-05-26:** the no-op was wrong — those width/height
+   > fields ARE the edit-line region size, so no-op'ing them clipped typed
+   > glyphs. `FUN_00944630` is now faithfully reimplemented (reads the real
+   > embedded font height). See the Current-status banner at the top.
 2. **`DAT_00DEB7E4` NULL pointer.** `FUN_00406430` reads `[ptr+0x20]` to
    grab the dialog HWND and stash it in `DAT_00DECA00 + 0xbb4` for the
    core→dialog bridge. In the real app, MFC sets this when the dialog
@@ -367,6 +404,9 @@ drain_queue(...); tick(...)                                 # second pass for re
 1. **`DAT_00DECA00 + 0x584 = 1`** (font count). Otherwise `FUN_00935660`
    underflows the index from 0 to 0xFFFFFFFF, all over the widget code.
    Normally read from `calc.settings`.
+   > **SUPERSEDED 2026-05-26:** `+0x584` is the default font *index*, not a
+   > count, and the correct value is **2** (the embedded h=16 font) so the
+   > edit line is sized right. See the Current-status banner at the top.
 2. **Pre-drain state-flag manipulations.** Before calling drain, the main
    loop clears `state[+0x2c] & 0x400` and sets `state[+0x90] | 0x10`. Without
    these the calc's "fresh input pending" path doesn't engage.
