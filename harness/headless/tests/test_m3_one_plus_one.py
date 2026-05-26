@@ -4,8 +4,14 @@ assert all are distinct (calc computed something at each step).
 
 Stronger assertions on specific MD5s would require gold values from the
 native-harness session, which weren't recorded. So we settle for "all
-distinct + final frame has more nonzero bytes than the lead-up" — that's
-the visual signature of the "2" being drawn on ENTER.
+distinct + every post-boot frame has real content".
+
+Note: once the guest filesystem was added (the calc now boots its Function
+aplet), the Home screen gained the "Function"/"RAD" title bar and the ENTER
+result "2" is drawn right-aligned on the edit line rather than on a fresh
+line. So the old "ENTER frame has strictly more nonzero pixels than the last
+digit" heuristic no longer holds (the two now differ by only a pixel or two);
+we assert the ENTER frame merely *differs* from the last-digit frame instead.
 """
 from __future__ import annotations
 
@@ -49,10 +55,11 @@ def test_one_plus_one_renders_five_distinct_frames():
     for i, n in enumerate(nonzero[1:], start=1):
         assert n > 2000, f"frame {i} has only {n} nonzero bytes (calc didn't render)"
 
-    # ENTER frame should have MORE nonzero bytes than the last digit press, because
-    # the result "2" gets drawn on the right.
-    assert nonzero[4] > nonzero[3], \
-        f"ENTER frame ({nonzero[4]} nonzero) should exceed last-digit frame ({nonzero[3]})"
+    # Pressing ENTER must change the screen (the result "2" gets drawn on the
+    # right of the edit line). Distinctness above already guarantees this, but
+    # assert it explicitly for a clear failure message.
+    assert md5s[4] != md5s[3], \
+        "ENTER frame is identical to the last-digit frame (result not drawn)"
 
     print("[OK] M3 1+1=ENTER produced 5 distinct frames:")
     for label, m, n in zip(["boot"] + [k[0] for k in m3.KEY_SEQUENCE], md5s, nonzero):

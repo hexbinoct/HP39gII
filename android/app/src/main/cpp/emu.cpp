@@ -3,12 +3,15 @@
 // every magic address; this is a near-mechanical translation.
 #include "emu.h"
 
+#include <cctype>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include <sys/stat.h>   // mkdir/stat — back the guest filesystem with real files
 
 #include <unicorn/unicorn.h>
 
@@ -109,6 +112,13 @@ struct Ctx {
     }
     uint32_t handle() { return next_handle++; }
 
+    // --- guest filesystem (so the calc can create/read its own aplet data) ---
+    // Without this the calc never builds its apps' runtime state and Symb/Plot/
+    // Num NULL-deref. fs_root is a real persistent dir (the app's filesDir);
+    // open_files maps a Win32 HANDLE to the backing stdio stream.
+    std::string fs_root;
+    std::unordered_map<uint32_t, FILE *> open_files;
+
     bool quiet = false;  // true after boot: stop appending the verbose trace
 
     void line(const std::string &s) { if (!quiet) { log += s; log += '\n'; } }
@@ -154,6 +164,66 @@ const char *fmt(const char *f, ...) {
 }
 
 // =========================================================================
+// Guest filesystem helpers. The calc stores each aplet's state in a file
+// under %APPDATA% (which we report as "C:\fake"). We map that tree onto a
+// real directory (fs_root) so CreateFile/Read/Write actually persist.
+// =========================================================================
+constexpr uint32_t INVALID_HANDLE = 0xFFFFFFFF;
+constexpr uint32_t GENERIC_WRITE  = 0x40000000;
+
+// Read a NUL-terminated UTF-16LE string from guest memory as UTF-8.
+std::string read_wstr(uc_engine *uc, uint32_t va, size_t max = 300) {
+    std::string s;
+    for (size_t i = 0; i < max; i++) {
+        uint16_t ch = 0;
+        if (uc_mem_read(uc, va + i * 2, &ch, 2) != UC_ERR_OK || ch == 0) break;
+        if (ch < 0x80) {
+            s += (char)ch;
+        } else if (ch < 0x800) {
+            s += (char)(0xC0 | (ch >> 6));
+            s += (char)(0x80 | (ch & 0x3F));
+        } else {
+            s += (char)(0xE0 | (ch >> 12));
+            s += (char)(0x80 | ((ch >> 6) & 0x3F));
+            s += (char)(0x80 | (ch & 0x3F));
+        }
+    }
+    return s;
+}
+
+// "C:\fake\HP39gII\&function.hpapp" -> "<fs_root>/HP39gII/&function.hpapp".
+std::string guest_to_real(Ctx &c, std::string p) {
+    for (char &ch : p) if (ch == '\\') ch = '/';
+    // strip the reported APPDATA prefix (case-insensitive), else any "C:/".
+    auto strip = [&](const char *pre) -> bool {
+        size_t n = strlen(pre);
+        if (p.size() < n) return false;
+        for (size_t i = 0; i < n; i++)
+            if (tolower((unsigned char)p[i]) != tolower((unsigned char)pre[i])) return false;
+        p = p.substr(n);
+        return true;
+    };
+    if (!strip("c:/fake")) strip("c:");
+    if (!p.empty() && p[0] != '/') p = "/" + p;
+    return c.fs_root + p;
+}
+
+// mkdir -p for the parent directories of a real path (under fs_root).
+void ensure_parent_dirs(const std::string &real) {
+    size_t pos = real.find('/', 1);
+    while (pos != std::string::npos) {
+        std::string dir = real.substr(0, pos);
+        mkdir(dir.c_str(), 0775);   // ignore EEXIST
+        pos = real.find('/', pos + 1);
+    }
+}
+
+bool file_exists(const std::string &real) {
+    struct stat st;
+    return stat(real.c_str(), &st) == 0;
+}
+
+// =========================================================================
 // Win32 shim. Returns stdcall arg count (for stack cleanup); sets *ret.
 // args[0..7] are the 8 dwords at [esp+4..esp+32].
 // =========================================================================
@@ -171,8 +241,83 @@ int shim_call(Ctx &c, const std::string &name, const uint32_t *a, uint32_t *ret)
         return R(h, 3);
     }
     if (name == "CreateMutexA") return R(c.handle(), 3);
-    if (name == "CreateFileW" || name == "CreateFileA")   return R(0xFFFFFFFF, 7);
-    if (name == "GetFileAttributesW" || name == "GetFileAttributesA") return R(0xFFFFFFFF, 1);
+    if (name == "CreateFileW") {
+        std::string real = guest_to_real(c, read_wstr(uc, a[0]));
+        uint32_t disp = a[4];                 // 1=NEW 2=ALWAYS 3=EXISTING 4=OPEN_ALWAYS 5=TRUNC
+        bool exists = file_exists(real);
+        const char *mode = nullptr;
+        switch (disp) {
+            case 3: if (!exists) { c.trace("CreateFileW", fmt("  CreateFileW('%s', OPEN_EXISTING) -> NOT FOUND", real.c_str())); return R(INVALID_HANDLE, 7); }
+                    mode = (a[1] & GENERIC_WRITE) ? "rb+" : "rb"; break;
+            case 1: if (exists) return R(INVALID_HANDLE, 7); mode = "wb+"; break;
+            case 5: if (!exists) return R(INVALID_HANDLE, 7); mode = "wb+"; break;
+            case 2: mode = "wb+"; break;
+            case 4: mode = exists ? "rb+" : "wb+"; break;
+            default: mode = exists ? "rb+" : "wb+"; break;
+        }
+        ensure_parent_dirs(real);
+        FILE *fp = fopen(real.c_str(), mode);
+        if (!fp) return R(INVALID_HANDLE, 7);
+        uint32_t h = c.handle();
+        c.open_files[h] = fp;
+        c.trace("CreateFileW", fmt("  CreateFileW('%s', disp=%u) -> handle 0x%x", real.c_str(), disp, h));
+        return R(h, 7);
+    }
+    if (name == "CreateFileA") return R(INVALID_HANDLE, 7);
+    if (name == "ReadFile") {
+        auto it = c.open_files.find(a[0]);
+        if (it == c.open_files.end()) return R(0, 5);
+        std::vector<uint8_t> buf(a[2]);
+        size_t got = a[2] ? fread(buf.data(), 1, a[2], it->second) : 0;
+        if (got) uc_mem_write(uc, a[1], buf.data(), got);
+        if (a[3]) wr32(uc, a[3], (uint32_t)got);    // lpNumberOfBytesRead
+        return R(1, 5);
+    }
+    if (name == "WriteFile") {
+        auto it = c.open_files.find(a[0]);
+        if (it == c.open_files.end()) { if (a[3]) wr32(uc, a[3], 0); return R(0, 5); }
+        std::vector<uint8_t> buf(a[2]);
+        if (a[2]) uc_mem_read(uc, a[1], buf.data(), a[2]);
+        size_t put = a[2] ? fwrite(buf.data(), 1, a[2], it->second) : 0;
+        fflush(it->second);
+        if (a[3]) wr32(uc, a[3], (uint32_t)put);    // lpNumberOfBytesWritten
+        return R(1, 5);
+    }
+    if (name == "SetFilePointer") {
+        auto it = c.open_files.find(a[0]);
+        if (it == c.open_files.end()) return R(INVALID_HANDLE, 4);
+        int32_t dist = (int32_t)a[1];
+        int whence = a[3] == 1 ? SEEK_CUR : a[3] == 2 ? SEEK_END : SEEK_SET;
+        fseek(it->second, dist, whence);
+        return R((uint32_t)ftell(it->second), 4);
+    }
+    if (name == "GetFileSize") {
+        auto it = c.open_files.find(a[0]);
+        if (it == c.open_files.end()) return R(INVALID_HANDLE, 2);
+        long cur = ftell(it->second);
+        fseek(it->second, 0, SEEK_END);
+        long sz = ftell(it->second);
+        fseek(it->second, cur, SEEK_SET);
+        if (a[1]) wr32(uc, a[1], 0);                // high dword
+        return R((uint32_t)sz, 2);
+    }
+    if (name == "CreateDirectoryW") {
+        std::string real = guest_to_real(c, read_wstr(uc, a[0]));
+        ensure_parent_dirs(real + "/.");
+        mkdir(real.c_str(), 0775);
+        return R(1, 2);
+    }
+    if (name == "DeleteFileW") {
+        remove(guest_to_real(c, read_wstr(uc, a[0])).c_str());
+        return R(1, 1);
+    }
+    if (name == "GetFileAttributesW") {
+        std::string real = guest_to_real(c, read_wstr(uc, a[0]));
+        struct stat st;
+        if (stat(real.c_str(), &st) != 0) return R(INVALID_HANDLE, 1);  // INVALID_FILE_ATTRIBUTES
+        return R(S_ISDIR(st.st_mode) ? 0x10u : 0x80u, 1);               // DIRECTORY : NORMAL
+    }
+    if (name == "GetFileAttributesA") return R(INVALID_HANDLE, 1);
     if (name == "GetEnvironmentVariableW") { write_utf16(uc, a[1], "C:\\fake", a[2]); return R(6, 3); }
     if (name == "GetEnvironmentVariableA") return R(0, 3);
     if (name == "RegOpenKeyExW" || name == "RegOpenKeyExA") return R(2, 5);
@@ -187,7 +332,11 @@ int shim_call(Ctx &c, const std::string &name, const uint32_t *a, uint32_t *ret)
     if (name == "WaitForSingleObject")    return R(0, 2);
     if (name == "WaitForMultipleObjects") return R(0, 4);
     if (name == "SetEvent" || name == "ResetEvent") return R(1, 1);
-    if (name == "CloseHandle") return R(1, 1);
+    if (name == "CloseHandle") {
+        auto it = c.open_files.find(a[0]);
+        if (it != c.open_files.end()) { fclose(it->second); c.open_files.erase(it); }
+        return R(1, 1);
+    }
     if (name == "CreateEventW") {
         uint32_t h = c.handle();
         c.line(fmt("  CreateEventW(sec=0x%x, manual=%u, init=%u, name=0x%x) -> handle 0x%x", a[0], a[1], a[2], a[3], h));
@@ -437,10 +586,12 @@ void setup_fs_segment(uc_engine *uc) {
 
 }  // namespace
 
-std::string hp39_boot(const uint8_t *exe, size_t len) {
+std::string hp39_boot(const uint8_t *exe, size_t len, const char *data_dir) {
     if (g) { if (g->uc) uc_close(g->uc); delete g; }   // re-boot resets the VM
     g = new Ctx();
     Ctx &c = *g;
+    c.fs_root = (data_dir && *data_dir) ? data_dir : "/data/local/tmp/hp39gii";
+    mkdir(c.fs_root.c_str(), 0775);   // the persistent store the calc writes its apps into
     uc_err err = uc_open(UC_ARCH_X86, UC_MODE_32, &c.uc);
     if (err != UC_ERR_OK) return std::string("uc_open failed: ") + uc_strerror(err);
     uc_engine *uc = c.uc;

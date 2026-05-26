@@ -70,7 +70,7 @@ class MainActivity : AppCompatActivity() {
         vm.execute {
             val ok = try {
                 val exe = assets.open("HP39gII.exe").use { it.readBytes() }
-                nativeBoot(exe)
+                nativeBoot(exe, filesDir.absolutePath)
                 nativeBooted()
             } catch (e: java.io.FileNotFoundException) {
                 false
@@ -262,7 +262,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     // --- native (libhp39gii.so) ---
-    external fun nativeBoot(exe: ByteArray): String
+    external fun nativeBoot(exe: ByteArray, dataDir: String): String
     external fun nativeBooted(): Boolean
     external fun nativeInjectKey(keycode: Int)
     external fun nativeFramebuffer(): ByteArray?

@@ -11,7 +11,9 @@ constexpr int HP39_FB_H = 127;
 // Mirrors harness/headless/load.py: maps the image, shims Win32, drives
 // FUN_00406430 to the main-loop entry FUN_00401730, then leaves the VM live so
 // keys can be injected. Returns a boot log (ends with "calc booted" on success).
-std::string hp39_boot(const uint8_t *exe, size_t len);
+// data_dir is a writable directory (the app's filesDir) that backs the guest
+// filesystem so the calc can create/read its per-aplet state files.
+std::string hp39_boot(const uint8_t *exe, size_t len, const char *data_dir);
 
 // True once the calc has booted and the VM is ready for key injection.
 bool hp39_booted();

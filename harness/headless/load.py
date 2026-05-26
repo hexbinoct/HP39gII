@@ -244,21 +244,125 @@ def _cm(shim, a):
 def _cma(shim, a):
     return _cm.__wrapped__(shim, a) if False else (shim.handle(), 3)[0]
 
+# --- guest filesystem ------------------------------------------------------
+# The calc keeps each aplet's runtime state in a file under %APPDATA%
+# ("C:\fake"). With no real FS those reads fail, the apps' data is never built,
+# and Symb/Plot/Num NULL-deref. Back it with an in-memory FS (reset per boot);
+# the calc creates its own default app files during boot. The Android port does
+# the same against the app's real filesDir (emu.cpp). Keep the two in sync.
+_INVALID = 0xFFFFFFFF
+_GENERIC_WRITE = 0x40000000
+_FS: dict[str, bytearray] = {}     # normalized path -> contents
+_FS_OPEN: dict[int, dict] = {}     # handle -> {path, pos}
+_FS_DIRS: set[str] = set()
+
+
+def _read_wstr(uc, addr, maxlen=300):
+    out = []
+    for i in range(maxlen):
+        ch = struct.unpack("<H", uc.mem_read(addr + i * 2, 2))[0]
+        if ch == 0:
+            break
+        out.append(chr(ch))
+    return "".join(out)
+
+
+def _fs_norm(p):
+    return p.replace("/", "\\").lower().rstrip("\\")
+
+
 @reg("CreateFileW", 7)
 def _cfw(shim, a):
-    return 0xFFFFFFFF  # INVALID_HANDLE_VALUE — "file not found"
+    path = _fs_norm(_read_wstr(shim.uc, a[0]))
+    disp = a[4]                              # 1=NEW 2=ALWAYS 3=EXISTING 4=OPEN_ALWAYS 5=TRUNC
+    exists = path in _FS
+    if disp == 3 and not exists:
+        return _INVALID
+    if disp == 1 and exists:
+        return _INVALID
+    if disp in (2, 5) or (disp in (1, 4) and not exists):
+        _FS[path] = bytearray()
+    _FS.setdefault(path, bytearray())
+    h = shim.handle()
+    _FS_OPEN[h] = {"path": path, "pos": 0}
+    return h
 
 @reg("CreateFileA", 7)
 def _cfa(shim, a):
-    return 0xFFFFFFFF
+    return _INVALID
+
+@reg("ReadFile", 5)
+def _rf(shim, a):
+    f = _FS_OPEN.get(a[0])
+    if f is None:
+        return 0
+    data = _FS.get(f["path"], bytearray())
+    chunk = bytes(data[f["pos"]:f["pos"] + a[2]])
+    if chunk:
+        shim.uc.mem_write(a[1], chunk)
+    f["pos"] += len(chunk)
+    if a[3]:
+        shim.uc.mem_write(a[3], struct.pack("<I", len(chunk)))
+    return 1
+
+@reg("WriteFile", 5)
+def _wf(shim, a):
+    f = _FS_OPEN.get(a[0])
+    if f is None:
+        if a[3]:
+            shim.uc.mem_write(a[3], struct.pack("<I", 0))
+        return 0
+    data = _FS.setdefault(f["path"], bytearray())
+    chunk = bytes(shim.uc.mem_read(a[1], a[2])) if a[2] else b""
+    end = f["pos"] + len(chunk)
+    if end > len(data):
+        data.extend(b"\x00" * (end - len(data)))
+    data[f["pos"]:end] = chunk
+    f["pos"] = end
+    if a[3]:
+        shim.uc.mem_write(a[3], struct.pack("<I", len(chunk)))
+    return 1
+
+@reg("SetFilePointer", 4)
+def _sfp(shim, a):
+    f = _FS_OPEN.get(a[0])
+    if f is None:
+        return _INVALID
+    dist = a[1] - 0x100000000 if a[1] >= 0x80000000 else a[1]   # signed
+    size = len(_FS.get(f["path"], b""))
+    f["pos"] = {0: dist, 1: f["pos"] + dist, 2: size + dist}.get(a[3], dist)
+    return f["pos"] & 0xFFFFFFFF
+
+@reg("GetFileSize", 2)
+def _gfs(shim, a):
+    f = _FS_OPEN.get(a[0])
+    size = len(_FS.get(f["path"], b"")) if f else 0
+    if a[1]:
+        shim.uc.mem_write(a[1], struct.pack("<I", 0))
+    return size & 0xFFFFFFFF
+
+@reg("CreateDirectoryW", 2)
+def _cdw(shim, a):
+    _FS_DIRS.add(_fs_norm(_read_wstr(shim.uc, a[0])))
+    return 1
+
+@reg("DeleteFileW", 1)
+def _dfw(shim, a):
+    _FS.pop(_fs_norm(_read_wstr(shim.uc, a[0])), None)
+    return 1
 
 @reg("GetFileAttributesW", 1)
 def _gfaw(shim, a):
-    return 0xFFFFFFFF  # INVALID_FILE_ATTRIBUTES
+    path = _fs_norm(_read_wstr(shim.uc, a[0]))
+    if path in _FS_DIRS:
+        return 0x10        # FILE_ATTRIBUTE_DIRECTORY
+    if path in _FS:
+        return 0x80        # FILE_ATTRIBUTE_NORMAL
+    return _INVALID        # INVALID_FILE_ATTRIBUTES
 
 @reg("GetFileAttributesA", 1)
 def _gfaa(shim, a):
-    return 0xFFFFFFFF
+    return _INVALID
 
 @reg("GetEnvironmentVariableW", 3)
 def _gevw(shim, a):
@@ -314,6 +418,7 @@ def _re(shim, a):
 
 @reg("CloseHandle", 1)
 def _ch(shim, a):
+    _FS_OPEN.pop(a[0], None)
     return 1
 
 @reg("CreateEventW", 4)
@@ -725,6 +830,7 @@ def setup_fs_segment(uc: Uc) -> None:
 # =============================================================================
 
 def install_iat_dispatcher(uc: Uc, img: LoadedImage, shim: Shim) -> None:
+    _FS.clear(); _FS_OPEN.clear(); _FS_DIRS.clear()   # fresh guest filesystem per boot
     def on_code(uc, address, size, user_data):
         if address == SENTINEL_RET:
             shim.trace(f"\n[halt] hit sentinel return address — calc thread returned cleanly")

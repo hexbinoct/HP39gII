@@ -62,11 +62,14 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_hexbinoct_hp39gii_MainActivity_nativeBoot(
         JNIEnv* env,
         jobject /* this */,
-        jbyteArray exe) {
+        jbyteArray exe,
+        jstring dataDir) {
     jsize len = env->GetArrayLength(exe);
     std::vector<uint8_t> buf(len);
     env->GetByteArrayRegion(exe, 0, len, reinterpret_cast<jbyte*>(buf.data()));
-    std::string out = hp39_boot(buf.data(), (size_t)len);
+    const char* dir = env->GetStringUTFChars(dataDir, nullptr);
+    std::string out = hp39_boot(buf.data(), (size_t)len, dir);
+    env->ReleaseStringUTFChars(dataDir, dir);
     return env->NewStringUTF(out.c_str());
 }
 
