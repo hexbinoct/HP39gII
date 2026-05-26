@@ -1,11 +1,18 @@
 package com.hexbinoct.hp39gii
 
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.os.Bundle
+import android.util.TypedValue
 import android.view.Gravity
-import android.widget.Button
-import android.widget.GridLayout
+import android.view.View
+import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.widget.TextViewCompat
 import com.hexbinoct.hp39gii.databinding.ActivityMainBinding
 import java.util.concurrent.Executors
 
@@ -16,19 +23,42 @@ class MainActivity : AppCompatActivity() {
     // native call (boot, key inject, framebuffer read) onto one worker thread.
     private val vm = Executors.newSingleThreadExecutor()
 
-    // (keycode, label) — order/layout mirrors web/main.js KEYS (6 per row).
-    private data class Key(val kc: Int, val label: String)
+    // shift = blue secondary (printed top of key on the real HP), alpha = red letter.
+    // Secondaries are read off the physical HP 39gII face plate; some alpha letters
+    // are left blank where the photo is ambiguous — fill them in as confirmed.
+    private data class Key(
+        val kc: Int, val label: String,
+        val shift: String? = null, val alpha: String? = null,
+    )
+    // Physical HP 39gII face plate. Labels + blue (shift) + red (alpha) read off the
+    // photo. The keycodes for TAN, LN, LOG, xʸ and ' (Mem) are PROVISIONAL — our
+    // leftover keycodes were labelled MENU/=/,//Tab and the photo can't tell us which
+    // drives which, so these 5 are best-guesses pending an on-device press test.
     private val keys = listOf(
         Key(0,"F1"),Key(1,"F2"),Key(2,"F3"),Key(3,"F4"),Key(4,"F5"),Key(5,"F6"),
-        Key(6,"Sym"),Key(7,"Plot"),Key(8,"Num"),Key(9,"▲"),Key(10,"▶"),Key(11,"Home"),
-        Key(12,"Apps"),Key(13,"View"),Key(14,"◀"),Key(15,"▼"),Key(16,"Vars"),Key(17,"Math"),
-        Key(18,"abc"),Key(19,"MENU"),Key(20,"DEL"),Key(21,"Shift"),Key(22,"Alpha"),Key(23,"X,T,θ"),
-        Key(24,"("),Key(25,")"),Key(26,","),Key(27,"="),Key(28,"÷"),Key(29,"x²"),
-        Key(30,"/"),Key(31,"7"),Key(32,"8"),Key(33,"9"),Key(34,"×"),Key(35,"sin"),
-        Key(36,"Tab"),Key(37,"4"),Key(38,"5"),Key(39,"6"),Key(40,"−"),Key(41,"cos"),
-        Key(42,"1"),Key(43,"2"),Key(44,"3"),Key(45,"+"),Key(46,"ON"),Key(47,"0"),
-        Key(48,"(-)"),Key(49,"."),Key(50,"ENTER"),
+        Key(6,"Symb",shift="Setup"),Key(7,"Plot",shift="Setup"),Key(8,"Num",shift="Setup"),
+        Key(11,"Home",shift="Modes"),Key(12,"Apps",shift="Info"),Key(13,"Views",shift="Help"),
+        Key(9,"▲"),Key(10,"▶"),Key(14,"◀"),Key(15,"▼"),
+        Key(16,"Vars",shift="Chars",alpha="A"),Key(17,"Math",shift="Cmds",alpha="B"),
+        Key(18,"a b/c",alpha="C"),Key(23,"X,T,θ,N",shift="EEX",alpha="D"),Key(20,"⌫",shift="Clear"),
+        Key(35,"SIN",shift="ASIN",alpha="E"),Key(41,"COS",shift="ACOS",alpha="F"),
+        Key(30,"TAN",shift="ATAN",alpha="G"),Key(27,"LN",shift="eˣ",alpha="H"),Key(26,"LOG",shift="10ˣ",alpha="I"),
+        Key(29,"x²",shift="√",alpha="J"),Key(36,"xʸ",shift="ⁿ√",alpha="K"),
+        Key(24,"(",shift="Copy",alpha="L"),Key(25,")",shift="Paste",alpha="M"),Key(28,"÷",shift="x⁻¹",alpha="N"),
+        Key(19,"'",shift="Mem",alpha="O"),Key(31,"7",shift="List",alpha="P"),Key(32,"8",shift="{",alpha="Q"),
+        Key(33,"9",shift="}",alpha="R"),Key(34,"×",shift="!",alpha="S"),
+        Key(22,"ALPHA"),Key(37,"4",shift="Matrix",alpha="T"),Key(38,"5",shift="[",alpha="U"),
+        Key(39,"6",shift="]",alpha="V"),Key(40,"−",shift="∡",alpha="W"),
+        Key(21,"SHIFT"),Key(42,"1",shift="Prgm",alpha="X"),Key(43,"2",shift="i",alpha="Y"),
+        Key(44,"3",shift="π",alpha="Z"),Key(45,"+",shift="Σ"),
+        Key(46,"ON/C",shift="OFF"),Key(47,"0",shift="Notes"),Key(49,".",shift="=",alpha=":"),
+        Key(48,"(-)",shift="ABS",alpha=";"),Key(50,"ENTER",shift="ANS"),
     )
+    private val byKc = keys.associateBy { it.kc }
+    // Light "white" keys on the real device: digits and the four arithmetic operators.
+    private val numKc = setOf(31,32,33,37,38,39,42,43,44,47,49,28,34,40,45)
+    private val kcShift = 21
+    private val kcAlpha = 22
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,31 +84,162 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun buildKeypad() {
-        val grid = binding.keypad
-        grid.removeAllViews()
-        for (k in keys) {
-            val b = Button(this).apply {
-                text = k.label
-                isAllCaps = false
-                textSize = 12f
-                setPadding(0, 0, 0, 0)
-                minHeight = 0; minimumHeight = 0
-                isEnabled = false
-                setOnClickListener { onKey(k.kc) }
-            }
-            val lp = GridLayout.LayoutParams().apply {
-                width = 0; height = GridLayout.LayoutParams.WRAP_CONTENT
-                columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1f)
-                setMargins(3, 3, 3, 3)
-            }
-            grid.addView(b, lp)
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun lighten(c: Int): Int {
+        fun up(x: Int) = (x + (255 - x) * 30 / 100).coerceAtMost(255)
+        return Color.rgb(up(Color.red(c)), up(Color.green(c)), up(Color.blue(c)))
+    }
+
+    private fun keyBackground(base: Int): StateListDrawable {
+        fun rect(color: Int) = GradientDrawable().apply {
+            shape = GradientDrawable.RECTANGLE
+            cornerRadius = dp(8).toFloat()
+            setColor(color)
+            setStroke(dp(1), 0xFF5A5A5A.toInt())
+        }
+        return StateListDrawable().apply {
+            addState(intArrayOf(android.R.attr.state_pressed), rect(lighten(base)))
+            addState(intArrayOf(), rect(base))
         }
     }
 
-    private fun setKeypadEnabled(on: Boolean) {
-        for (i in 0 until binding.keypad.childCount) binding.keypad.getChildAt(i).isEnabled = on
+    private val shiftBlue = 0xFF3FA9E0.toInt()   // HP "Shift" cyan-blue
+    private val alphaRed  = 0xFFE0703A.toInt()   // HP "Alpha" orange-red
+
+    /** A key is a FrameLayout: main label centered, blue shift top-left, red alpha top-right. */
+    private fun makeKey(k: Key): FrameLayout {
+        val accent  = 0xFF2E6CA2.toInt()       // ENTER
+        val shiftBg = 0xFF2F6FB5.toInt()       // SHIFT key (HP blue)
+        val alphaBg = 0xFFB5601C.toInt()       // ALPHA key (HP orange)
+        val numBg   = 0xFF45454C.toInt()       // digits / operators
+        val fnBg    = 0xFF2C2C30.toInt()       // function keys
+        val base = when {
+            k.kc == 50 -> accent
+            k.kc == kcShift -> shiftBg
+            k.kc == kcAlpha -> alphaBg
+            k.kc in numKc -> numBg
+            else -> fnBg
+        }
+        val light = k.kc in numKc || k.kc == 50 || k.kc == kcShift || k.kc == kcAlpha
+        val mainColor = if (light) Color.WHITE else 0xFFCBCBCB.toInt()
+
+        // Secondary labels sit in the BOTTOM corners, inset from the edges.
+        fun corner(text: String, color: Int, atStart: Boolean) = TextView(this).apply {
+            this.text = text
+            setTextColor(color)
+            setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+            includeFontPadding = false
+            val g = Gravity.BOTTOM or (if (atStart) Gravity.START else Gravity.END)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT, g).apply {
+                bottomMargin = dp(5)
+                if (atStart) marginStart = dp(6) else marginEnd = dp(6)
+            }
+        }
+
+        // Main label sits near the top, leaving the bottom for the secondaries.
+        val main = TextView(this).apply {
+            text = k.label
+            setTextColor(mainColor)
+            gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            includeFontPadding = false
+            setPadding(0, dp(5), 0, 0)
+            // Auto-size so long labels (X,T,θ,N, ALPHA, ENTER) never clip.
+            TextViewCompat.setAutoSizeTextTypeUniformWithConfiguration(
+                this, 9, 16, 1, TypedValue.COMPLEX_UNIT_SP)
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT)
+        }
+
+        return FrameLayout(this).apply {
+            background = keyBackground(base)
+            setPadding(dp(3), dp(2), dp(3), dp(2))
+            isEnabled = false
+            addView(main)
+            k.shift?.let { addView(corner(it, shiftBlue, atStart = true)) }
+            k.alpha?.let { addView(corner(it, alphaRed,  atStart = false)) }
+            setOnClickListener { onKey(k.kc) }
+        }
     }
+
+    private val km by lazy { dp(3) }   // uniform gap between keys
+
+    private fun emptyCell(weight: Float) = View(this).apply {
+        layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, weight)
+    }
+
+    /** One horizontal strip of keys (by keycode); pass null for an empty cell. */
+    private fun keyRow(kcs: List<Int?>, heightWeight: Float = 1f): LinearLayout {
+        val rl = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, heightWeight)
+        }
+        for (kc in kcs) {
+            if (kc == null) { rl.addView(emptyCell(1f)); continue }
+            val b = makeKey(byKc.getValue(kc))
+            b.layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 1f)
+                .apply { setMargins(km, km, km, km) }
+            rl.addView(b)
+        }
+        return rl
+    }
+
+    /** Symb/Plot/Num over Home/Apps/Views (left) beside a 4-way arrow cross (right). */
+    private fun clusterRow(): LinearLayout {
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 3f)
+            addView(keyRow(listOf(6, 7, 8)))
+            addView(keyRow(listOf(11, 12, 13)))
+        }
+        // 3x3 nav cross: arrows at N/E/S/W, empty centre + corners.
+        val nav = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 2f)
+            addView(keyRow(listOf(null, 9, null)))    // ▲
+            addView(keyRow(listOf(14, null, 10)))     // ◀ ▶
+            addView(keyRow(listOf(null, 15, null)))    // ▼
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 2f)   // two key-rows tall
+            addView(left)
+            addView(nav)
+        }
+    }
+
+    private fun buildKeypad() {
+        val pad = binding.keypad
+        pad.removeAllViews()
+        pad.addView(keyRow(listOf(0, 1, 2, 3, 4, 5)))        // F1–F6
+        pad.addView(clusterRow())                             // Symb/.. + nav
+        pad.addView(keyRow(listOf(16, 17, 18, 23, 20)))       // Vars Math a b/c X,T,θ,N ⌫
+        pad.addView(keyRow(listOf(35, 41, 30, 27, 26)))       // SIN COS TAN LN LOG
+        pad.addView(keyRow(listOf(29, 36, 24, 25, 28)))       // x² xʸ ( ) ÷
+        pad.addView(keyRow(listOf(19, 31, 32, 33, 34)))       // ' 7 8 9 ×
+        pad.addView(keyRow(listOf(22, 37, 38, 39, 40)))       // ALPHA 4 5 6 −
+        pad.addView(keyRow(listOf(21, 42, 43, 44, 45)))       // SHIFT 1 2 3 +
+        pad.addView(keyRow(listOf(46, 47, 49, 48, 50)))       // ON/C 0 . (-) ENTER
+    }
+
+    private fun forEachKey(action: (FrameLayout) -> Unit) {
+        fun walk(g: LinearLayout) {
+            for (i in 0 until g.childCount) {
+                when (val v = g.getChildAt(i)) {
+                    is FrameLayout -> action(v)
+                    is LinearLayout -> walk(v)
+                }
+            }
+        }
+        walk(binding.keypad)
+    }
+
+    private fun setKeypadEnabled(on: Boolean) = forEachKey { it.isEnabled = on }
 
     private fun onKey(kc: Int) {
         vm.execute { nativeInjectKey(kc); refresh() }
