@@ -31,34 +31,35 @@ class MainActivity : AppCompatActivity() {
         val shift: String? = null, val alpha: String? = null,
     )
     // Physical HP 39gII face plate. Labels + blue (shift) + red (alpha) read off the
-    // photo. The keycodes for TAN, LN, LOG, xʸ and ' (Mem) are PROVISIONAL — our
-    // leftover keycodes were labelled MENU/=/,//Tab and the photo can't tell us which
-    // drives which, so these 5 are best-guesses pending an on-device press test.
+    // photo. KEYCODES are the calc-OS values from the skin files (`key="(",28`, etc.) —
+    // the same numbers fed to FN_PRESS_KEY/the 64-bit keymask. The face plate is a clean
+    // 5-column grid; the skin's ASCII anchors ( ( ) / 7 8 9 * 4 5 6 - 1 2 3 + 0 ) pin it
+    // exactly, so the un-anchored function keys follow by grid position.
     private val keys = listOf(
         Key(0,"F1"),Key(1,"F2"),Key(2,"F3"),Key(3,"F4"),Key(4,"F5"),Key(5,"F6"),
         Key(6,"Symb",shift="Setup"),Key(7,"Plot",shift="Setup"),Key(8,"Num",shift="Setup"),
         Key(11,"Home",shift="Modes"),Key(12,"Apps",shift="Info"),Key(13,"Views",shift="Help"),
         Key(9,"▲"),Key(10,"▶"),Key(14,"◀"),Key(15,"▼"),
         Key(16,"Vars",shift="Chars",alpha="A"),Key(17,"Math",shift="Cmds",alpha="B"),
-        Key(18,"a b/c",alpha="C"),Key(23,"X,T,θ,N",shift="EEX",alpha="D"),Key(20,"⌫",shift="Clear"),
-        Key(35,"SIN",shift="ASIN",alpha="E"),Key(41,"COS",shift="ACOS",alpha="F"),
-        Key(30,"TAN",shift="ATAN",alpha="G"),Key(27,"LN",shift="eˣ",alpha="H"),Key(26,"LOG",shift="10ˣ",alpha="I"),
-        Key(29,"x²",shift="√",alpha="J"),Key(36,"xʸ",shift="ⁿ√",alpha="K"),
-        Key(24,"(",shift="Copy",alpha="L"),Key(25,")",shift="Paste",alpha="M"),Key(28,"÷",shift="x⁻¹",alpha="N"),
-        Key(19,"'",shift="Mem",alpha="O"),Key(31,"7",shift="List",alpha="P"),Key(32,"8",shift="{",alpha="Q"),
-        Key(33,"9",shift="}",alpha="R"),Key(34,"×",shift="!",alpha="S"),
-        Key(22,"ALPHA"),Key(37,"4",shift="Matrix",alpha="T"),Key(38,"5",shift="[",alpha="U"),
+        Key(18,"a b/c",alpha="C"),Key(19,"X,T,θ,N",shift="EEX",alpha="D"),Key(20,"⌫",shift="Clear"),
+        Key(21,"SIN",shift="ASIN",alpha="E"),Key(22,"COS",shift="ACOS",alpha="F"),
+        Key(23,"TAN",shift="ATAN",alpha="G"),Key(24,"LN",shift="eˣ",alpha="H"),Key(25,"LOG",shift="10ˣ",alpha="I"),
+        Key(26,"x²",shift="√",alpha="J"),Key(27,"xʸ",shift="ⁿ√",alpha="K"),
+        Key(28,"(",shift="Copy",alpha="L"),Key(29,")",shift="Paste",alpha="M"),Key(30,"÷",shift="x⁻¹",alpha="N"),
+        Key(31,"'",shift="Mem",alpha="O"),Key(32,"7",shift="List",alpha="P"),Key(33,"8",shift="{",alpha="Q"),
+        Key(34,"9",shift="}",alpha="R"),Key(35,"×",shift="!",alpha="S"),
+        Key(36,"ALPHA"),Key(37,"4",shift="Matrix",alpha="T"),Key(38,"5",shift="[",alpha="U"),
         Key(39,"6",shift="]",alpha="V"),Key(40,"−",shift="∡",alpha="W"),
-        Key(21,"SHIFT"),Key(42,"1",shift="Prgm",alpha="X"),Key(43,"2",shift="i",alpha="Y"),
+        Key(41,"SHIFT"),Key(42,"1",shift="Prgm",alpha="X"),Key(43,"2",shift="i",alpha="Y"),
         Key(44,"3",shift="π",alpha="Z"),Key(45,"+",shift="Σ"),
         Key(46,"ON/C",shift="OFF"),Key(47,"0",shift="Notes"),Key(49,".",shift="=",alpha=":"),
         Key(48,"(-)",shift="ABS",alpha=";"),Key(50,"ENTER",shift="ANS"),
     )
     private val byKc = keys.associateBy { it.kc }
     // Light "white" keys on the real device: digits and the four arithmetic operators.
-    private val numKc = setOf(31,32,33,37,38,39,42,43,44,47,49,28,34,40,45)
-    private val kcShift = 21
-    private val kcAlpha = 22
+    private val numKc = setOf(32,33,34,37,38,39,42,43,44,47,49,30,35,40,45)
+    private val kcShift = 41
+    private val kcAlpha = 36
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -218,12 +219,12 @@ class MainActivity : AppCompatActivity() {
         pad.removeAllViews()
         pad.addView(keyRow(listOf(0, 1, 2, 3, 4, 5)))        // F1–F6
         pad.addView(clusterRow())                             // Symb/.. + nav
-        pad.addView(keyRow(listOf(16, 17, 18, 23, 20)))       // Vars Math a b/c X,T,θ,N ⌫
-        pad.addView(keyRow(listOf(35, 41, 30, 27, 26)))       // SIN COS TAN LN LOG
-        pad.addView(keyRow(listOf(29, 36, 24, 25, 28)))       // x² xʸ ( ) ÷
-        pad.addView(keyRow(listOf(19, 31, 32, 33, 34)))       // ' 7 8 9 ×
-        pad.addView(keyRow(listOf(22, 37, 38, 39, 40)))       // ALPHA 4 5 6 −
-        pad.addView(keyRow(listOf(21, 42, 43, 44, 45)))       // SHIFT 1 2 3 +
+        pad.addView(keyRow(listOf(16, 17, 18, 19, 20)))       // Vars Math a b/c X,T,θ,N ⌫
+        pad.addView(keyRow(listOf(21, 22, 23, 24, 25)))       // SIN COS TAN LN LOG
+        pad.addView(keyRow(listOf(26, 27, 28, 29, 30)))       // x² xʸ ( ) ÷
+        pad.addView(keyRow(listOf(31, 32, 33, 34, 35)))       // ' 7 8 9 ×
+        pad.addView(keyRow(listOf(36, 37, 38, 39, 40)))       // ALPHA 4 5 6 −
+        pad.addView(keyRow(listOf(41, 42, 43, 44, 45)))       // SHIFT 1 2 3 +
         pad.addView(keyRow(listOf(46, 47, 49, 48, 50)))       // ON/C 0 . (-) ENTER
     }
 
