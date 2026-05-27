@@ -702,6 +702,33 @@ std::string hp39_boot(const uint8_t *exe, size_t len, const char *data_dir) {
         uint32_t bridge = rd32(uc, ADDR_HOST_BRIDGE);
         wr32(uc, bridge + 0x584, 2);
         c.line("[boot] set host_bridge[+0x584] = 2 (default font index -> embedded h=16 font)");
+
+        // We enter at the calc worker thread (CALC_THREAD_VA) and so skip
+        // mainCRTStartup's _initterm walk of the C++ static-init table (.CRT$XC*).
+        // Four plot-transform scale constants are computed by static initializers
+        // and left zero, which makes the plot's decimal->pixel transform
+        // (FUN_00959400) map every curve sample to (0,0) -> no curve drawn. Run the
+        // four initializers explicitly (each sets its global = 21/2 = 10.5):
+        //   FUN_00a2c190 -> DAT_00dfe978   FUN_00a2c1d0 -> DAT_00dfe988  (X axis)
+        //   FUN_00a2c210 -> DAT_00dfe998   FUN_00a2c250 -> DAT_00dfe9a8  (Y axis)
+        // (Running the whole .CRT$XC* table blindly faults -- those initializers
+        // need CRT/env state we don't reproduce; these four are self-contained.)
+        // call_emu is defined later in the anonymous namespace, so run them inline
+        // with the same resume-to-sentinel loop.
+        auto run_init = [&](uint32_t fn) {
+            uint32_t e = 0; uc_reg_read(uc, UC_X86_REG_ESP, &e);
+            e -= 4; wr32(uc, e, SENTINEL_HOST_RET);
+            uc_reg_write(uc, UC_X86_REG_ESP, &e);
+            uint32_t z = 0; uc_reg_write(uc, UC_X86_REG_ECX, &z);
+            uint32_t ip = fn;
+            for (int shots = 0; shots < 20; ++shots) {
+                uc_emu_start(uc, ip, 0, 5ULL * 1000000, 20000000);
+                uc_reg_read(uc, UC_X86_REG_EIP, &ip);
+                if (ip == SENTINEL_HOST_RET) break;
+            }
+        };
+        for (uint32_t fn : {0xA2C190u, 0xA2C1D0u, 0xA2C210u, 0xA2C250u}) run_init(fn);
+        c.line("[boot] ran 4 plot-transform static initializers (DAT_00dfe978/988/998/9a8 = 10.5)");
     }
     c.quiet = true;  // keep the VM live; stop accumulating the verbose trace
     return c.log;
@@ -722,7 +749,20 @@ uint32_t call_emu(Ctx &c, uint32_t fn, uint32_t ecx, const uint32_t *args, int n
     esp -= 4; wr32(uc, esp, SENTINEL_HOST_RET);
     uc_reg_write(uc, UC_X86_REG_ESP, &esp);
     uc_reg_write(uc, UC_X86_REG_ECX, &ecx);
-    uc_emu_start(uc, fn, 0, 5ULL * 1000000, 10000000);
+    // Resume-to-sentinel: a single bounded shot truncates long calls (one plot
+    // tick runs ~15M instructions, past the old 10M cap, halting mid-math so the
+    // curve never finishes drawing). Loop emu_start from the stopped EIP until it
+    // reaches the sentinel, capped by a generous total budget so a genuine
+    // infinite loop still terminates.
+    constexpr uint64_t SHOT = 20000000ULL, BUDGET = 400000000ULL;
+    uint32_t eip = fn; uint64_t spent = 0;
+    for (;;) {
+        uc_emu_start(uc, eip, 0, 5ULL * 1000000, SHOT);
+        uc_reg_read(uc, UC_X86_REG_EIP, &eip);
+        if (eip == SENTINEL_HOST_RET) break;
+        spent += SHOT;
+        if (spent >= BUDGET) break;  // give up rather than spin forever
+    }
     uint32_t eax = 0; uc_reg_read(uc, UC_X86_REG_EAX, &eax);
     return eax;
 }

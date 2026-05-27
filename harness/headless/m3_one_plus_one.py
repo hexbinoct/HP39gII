@@ -83,6 +83,21 @@ def boot(uc: Uc):
     uc.mem_write(bridge + 0x584, struct.pack("<I", 2))
     print(f"[boot] set host_bridge[+0x584] = 2 (default font index -> embedded h=16 font)")
 
+    # We enter at the calc worker thread (CALC_THREAD_VA) and so skip
+    # mainCRTStartup's _initterm walk of the C++ static-initializer table
+    # (.CRT$XC*). Most globals are plain .data, but a handful of plot-transform
+    # scale constants are computed by static initializers and are left zero,
+    # which makes the plot's decimal->pixel transform (FUN_00959400) map every
+    # curve sample to (0,0) -> no curve drawn. Run the four plot-transform
+    # initializers explicitly (each sets its global = 21/2 = 10.5):
+    #   FUN_00a2c190 -> DAT_00dfe978   FUN_00a2c1d0 -> DAT_00dfe988  (X axis)
+    #   FUN_00a2c210 -> DAT_00dfe998   FUN_00a2c250 -> DAT_00dfe9a8  (Y axis)
+    # (Running the whole .CRT$XC* table blindly faults — those initializers need
+    # CRT/environment state we don't reproduce; these four are self-contained.)
+    for _init in (0xA2C190, 0xA2C1D0, 0xA2C210, 0xA2C250):
+        call_emu(uc, _init)
+    print("[boot] ran 4 plot-transform static initializers (DAT_00dfe978/988/998/9a8 = 10.5)")
+
     return shim, img
 
 
@@ -101,13 +116,26 @@ def call_emu(uc: Uc, fn_va: int, ecx: int = 0, stack_args: tuple[int, ...] = ())
     uc.mem_write(esp, struct.pack("<I", SENTINEL_HOST_RET))
     uc.reg_write(UC_X86_REG_ESP, esp)
     uc.reg_write(UC_X86_REG_ECX, ecx & 0xFFFFFFFF)
-    uc.emu_start(fn_va, 0, timeout=5_000_000, count=10_000_000)
-    actual_eip = uc.reg_read(UC_X86_REG_EIP)
-    if actual_eip != SENTINEL_HOST_RET:
-        raise RuntimeError(
-            f"call_emu({fn_va:#x}) did not return to sentinel: "
-            f"halted at EIP=0x{actual_eip:x}"
-        )
+    # Resume-to-sentinel: a single bounded shot truncates long calls (e.g. one
+    # plot tick runs ~15M instructions, past the old 10M cap, halting mid-math
+    # and never drawing the curve). Loop emu_start from the stopped EIP until it
+    # reaches the sentinel, capped by a generous total budget so a genuine
+    # infinite loop still terminates.
+    SHOT, BUDGET = 20_000_000, 400_000_000
+    spent = 0
+    eip = fn_va
+    while True:
+        uc.emu_start(eip, 0, timeout=5_000_000, count=SHOT)
+        eip = uc.reg_read(UC_X86_REG_EIP)
+        if eip == SENTINEL_HOST_RET:
+            break
+        spent += SHOT
+        if spent >= BUDGET:
+            raise RuntimeError(
+                f"call_emu({fn_va:#x}) did not return to sentinel within "
+                f"{BUDGET} insns: halted at EIP=0x{eip:x}"
+            )
+    actual_eip = eip
     return uc.reg_read(UC_X86_REG_EAX)
 
 
