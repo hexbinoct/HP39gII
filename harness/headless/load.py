@@ -408,6 +408,14 @@ def _wfso(shim, a):
 def _wfmo(shim, a):
     return 0  # signal index 0
 
+@reg("ReleaseMutex", 1)
+def _rm(shim, a):
+    # 1 stdcall arg. If left unhandled it defaults to argc=0, leaking the arg on
+    # the stack -> ESP drift that wrecks the caller's RET. Only the modal
+    # "wait for key" path (FUN_00401670, reached via e.g. F5) calls it, which is
+    # why arithmetic/ON looked fine but F5 jumped to EIP=0.
+    return 1
+
 @reg("SetEvent", 1)
 def _se(shim, a):
     return 1

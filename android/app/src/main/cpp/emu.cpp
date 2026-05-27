@@ -331,6 +331,12 @@ int shim_call(Ctx &c, const std::string &name, const uint32_t *a, uint32_t *ret)
     }
     if (name == "WaitForSingleObject")    return R(0, 2);
     if (name == "WaitForMultipleObjects") return R(0, 4);
+    // ReleaseMutex(hMutex): 1 stdcall arg. Without an explicit handler it falls
+    // through to the argc=0 default, leaking its arg on the stack -> ESP drift
+    // that corrupts the caller's RET. Only the modal "wait for key" path
+    // (FUN_00401670, reached via e.g. F5) calls it, so arithmetic/ON looked fine
+    // while F5 jumped to EIP=0 and wedged the VM.
+    if (name == "ReleaseMutex") return R(1, 1);
     if (name == "SetEvent" || name == "ResetEvent") return R(1, 1);
     if (name == "CloseHandle") {
         auto it = c.open_files.find(a[0]);
