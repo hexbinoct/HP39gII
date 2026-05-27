@@ -83,9 +83,19 @@ def boot(uc: Uc):
     uc.mem_write(bridge + 0x584, struct.pack("<I", 2))
     print(f"[boot] set host_bridge[+0x584] = 2 (default font index -> embedded h=16 font)")
 
-    # We enter at the calc worker thread (CALC_THREAD_VA) and so skip
-    # mainCRTStartup's _initterm walk of the C++ static-initializer table
-    # (.CRT$XC*). Most globals are plain .data, but a handful of plot-transform
+    # We enter at the calc worker thread (CALC_THREAD_VA) and so skip ALL of
+    # mainCRTStartup's setup. __mtinit (0x97cdd2) wires up the CRT per-thread-data
+    # (FLS/TLS) infrastructure: it fills the encoded FLS getter pointers
+    # (DAT_00e00e40/44, left 0 by our skip) so __getptd_noexit can fetch a
+    # _ptiddata block instead of calling through a NULL pointer. giac's number
+    # formatting (locale/errno/ostringstream) goes through __getptd, so CAS
+    # commands like ifactor(24) NULL-call (EIP=0) and the result never renders
+    # without this. (GetProcAddress is stubbed -> 0, so __mtinit takes its Tls*
+    # fallback path, which our shims handle.)
+    call_emu(uc, 0x0097CDD2)
+    print("[boot] ran __mtinit (CRT per-thread-data / FLS init) for CAS commands")
+
+    # Most other globals are plain .data, but a handful of plot-transform
     # scale constants are computed by static initializers and are left zero,
     # which makes the plot's decimal->pixel transform (FUN_00959400) map every
     # curve sample to (0,0) -> no curve drawn. Run the four plot-transform

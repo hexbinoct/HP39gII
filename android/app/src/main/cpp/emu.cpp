@@ -727,6 +727,18 @@ std::string hp39_boot(const uint8_t *exe, size_t len, const char *data_dir) {
                 if (ip == SENTINEL_HOST_RET) break;
             }
         };
+        // __mtinit (0x97cdd2) wires up the CRT per-thread-data (FLS/TLS)
+        // infrastructure that mainCRTStartup normally runs before us. It fills
+        // the encoded FLS getter pointers (DAT_00e00e40/44, left 0 by our skip)
+        // so __getptd_noexit fetches a _ptiddata block instead of calling
+        // through a NULL pointer (EIP=0). giac's number formatting
+        // (locale/errno/ostringstream) goes through __getptd, so CAS commands
+        // like ifactor(24) NULL-call and never render their result without this.
+        // (GetProcAddress is stubbed -> 0, so __mtinit takes its Tls* fallback
+        // path, which our shims handle.)
+        run_init(0x0097CDD2u);
+        c.line("[boot] ran __mtinit (CRT per-thread-data / FLS init) for CAS commands");
+
         for (uint32_t fn : {0xA2C190u, 0xA2C1D0u, 0xA2C210u, 0xA2C250u}) run_init(fn);
         c.line("[boot] ran 4 plot-transform static initializers (DAT_00dfe978/988/998/9a8 = 10.5)");
     }
