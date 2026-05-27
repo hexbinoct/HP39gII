@@ -2,19 +2,19 @@
 
 Extracting the calculator engine out of the official **HP 39gII** Windows emulator
 (`HP39gII.exe`) and running it under raw CPU emulation — no Windows, no MFC, no GUI —
-so the same calculator core can be driven on **Android** and **in the browser** with our
-own input and display.
+so the same calculator core can be driven on Android and in the browser with our own input and display.
 
 This repo is the reverse-engineering work and the emulation harness. It does **not**
 contain HP's binaries (see [Getting the binary](#getting-the-binary)).
 
 ---
 
-## Why this is interesting
+## But Why!
 
-`HP39gII.exe` is a 10 MB MFC Windows app: the calculator is a self-contained engine
-buried inside a desktop GUI shell. Instead of rewriting the calculator's math, this
-project **runs HP's original x86 calculator code unmodified** inside a
+Because it was a DREAM for *years* to run it on my phone! I just love hp39gII specifically because this is the parent project of what actually became hp Prime calculator! And look at the high-res screen, and its programming! Everything.
+`HP39gII.exe` is a Windows executable, the calculator is a self-contained engine
+buried inside a desktop GUI shell. This
+project is aimed to run HP's original x86 calculator code unmodified inside a
 [Unicorn Engine](https://www.unicorn-engine.org/) sandbox, with a hand-written Win32
 shim standing in for the operating system. Map the PE, fake just enough of Windows to
 keep the code happy, and drive the calculator core directly.
@@ -44,8 +44,7 @@ HP's own rendering code, driven headless through `1 + 1 = ENTER` (upscaled 4×):
 |------|-----------|-----------|-----------|---------------|
 | ![boot](docs/screenshots/01_initial.png) | ![1](docs/screenshots/02_key_1.png) | ![+](docs/screenshots/03_key_plus.png) | ![1](docs/screenshots/04_key_1_again.png) | ![=](docs/screenshots/05_key_enter.png) |
 
-The final frame shows `1 + 1` evaluating to `2` on the entry line — produced entirely by
-the original firmware, no GUI, no Windows.
+The final frame shows `1 + 1` evaluating to `2` on the entry line — produced entirely by the original firmware, no GUI, no Windows.
 
 ## Android app (`android/`)
 
@@ -60,6 +59,10 @@ then drives the firmware directly: a 51-key on-screen keypad injects keypresses
 (`enqueue → press → drain/tick → release`) and the live 256×127 framebuffer is decoded
 and rendered. Tapping `1 + 1 = ENTER` shows `2`, computed by HP's own code. You supply
 `HP39gII.exe` in `app/src/main/assets/` (gitignored).
+
+### ▶ Run it on your Android phone
+
+For building on android **[`android/README.md`](android/README.md)** — it covers building the native library, where to drop your `HP39gII.exe`, and installing the app over USB.
 
 **Building Unicorn for Android needs one step**, because Unicorn embeds QEMU and QEMU's
 `configure` needs POSIX tooling:
@@ -91,13 +94,13 @@ Prebuilt libs are gitignored; you regenerate them once, then build the app norma
 
 ## Getting the binary
 
-This project needs `HP39gII.exe` from HP's free emulator, which is **not** redistributed
-here (it's HP's copyrighted software). Obtain it from HP's official download for the
-HP 39gII connectivity/emulator package, then place `HP39gII.exe` either:
+This project needs `HP39gII.exe` from HP's free emulator, which is **not** redistributed here (it's HP's copyrighted software). Obtain it from HP's official download for the HP 39gII connectivity/emulator package, then place `HP39gII.exe` either:
 
 - next to `harness/headless/load.py`, or
 - at the repo root, or
 - anywhere, and point to it: `HP39GII_EXE=/path/to/HP39gII.exe`
+- for the **Android app**: copy it to `android/app/src/main/assets/HP39gII.exe`
+  (create the `assets/` folder if it isn't there) — see [`android/README.md`](android/README.md)
 
 ## Running the headless harness
 
