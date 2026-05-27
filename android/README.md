@@ -61,5 +61,6 @@ shows `2`, computed by HP's own firmware.
   case is wrong (must be exactly `HP39gII.exe`).
 - **Linker / `libunicorn.a` not found** — step 1 wasn't done for your target ABI;
   check `app/src/main/cpp/prebuilt/<abi>/`.
-- **What works today:** interactive keypad + live display (Phase C). Plotting a
-  defined function doesn't draw the curve yet — known open issue.
+- **What works today:** interactive keypad + live display (Phase C), plotting
+  defined functions (e.g. `F1(X)=SIN(X)`), and CAS commands like `ifactor(24)`
+  → `2^3*3` — all computed by HP's own firmware.

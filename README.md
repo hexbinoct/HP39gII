@@ -52,8 +52,9 @@ Phases B and C are working: `harness/headless/load.py` is ported to C++
 the same main-loop entry (`EIP=0x401730`) as the Python harness, bit-for-bit. The app
 then drives the firmware directly: a 51-key on-screen keypad injects keypresses
 (`enqueue → press → drain/tick → release`) and the live 256×127 framebuffer is decoded
-and rendered. Tapping `1 + 1 = ENTER` shows `2`, computed by HP's own code. You supply
-`HP39gII.exe` in `app/src/main/assets/` (gitignored).
+and rendered. Tapping `1 + 1 = ENTER` shows `2`, plotting `F1(X)=SIN(X)` draws the
+curve, and CAS commands like `ifactor(24)` → `2^3*3` evaluate — all computed by HP's
+own code. You supply `HP39gII.exe` in `app/src/main/assets/` (gitignored).
 
 ### ▶ Run it on your Android phone
 
